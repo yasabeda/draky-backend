@@ -233,7 +233,7 @@ function validateState(newState, oldState) {
 // ============================================
 
 // Load player state
-app.post('/api/load', rateLimitMiddleware(30, 60000), async (req, res) => {
+app.post('/api/load', rateLimitMiddleware(120, 60000), async (req, res) => {
   try {
     const { initData } = req.body;
     const user = verifyTelegramInitData(initData);
@@ -259,7 +259,7 @@ app.post('/api/load', rateLimitMiddleware(30, 60000), async (req, res) => {
 });
 
 // Save player state (with anti-cheat)
-app.post('/api/save', rateLimitMiddleware(30, 60000), async (req, res) => {
+app.post('/api/save', rateLimitMiddleware(120, 60000), async (req, res) => {
   try {
     const { initData, state, leaderboardInfo } = req.body;
     const user = verifyTelegramInitData(initData);
@@ -336,7 +336,7 @@ app.post('/api/save', rateLimitMiddleware(30, 60000), async (req, res) => {
 });
 
 // Global leaderboard (public, cached friendly)
-app.get('/api/leaderboard', rateLimitMiddleware(60, 60000), async (req, res) => {
+app.get('/api/leaderboard', rateLimitMiddleware(200, 60000), async (req, res) => {
   try {
     const rows = await sb('leaderboard?select=user_id,display_name,trophies,total_power,dragons_count,is_premium&order=trophies.desc&limit=100');
     res.setHeader('Cache-Control', 'public, max-age=30');
@@ -347,7 +347,7 @@ app.get('/api/leaderboard', rateLimitMiddleware(60, 60000), async (req, res) => 
 });
 
 // Get user's referrals
-app.post('/api/referrals', rateLimitMiddleware(20, 60000), async (req, res) => {
+app.post('/api/referrals', rateLimitMiddleware(60, 60000), async (req, res) => {
   try {
     const { initData } = req.body;
     const user = verifyTelegramInitData(initData);
@@ -377,7 +377,7 @@ function calcNetCashback(starsAmount, isReferrerPremium) {
 
 // POST /api/cashback
 // A user reports their purchase so their referrer gets credited
-app.post('/api/cashback', rateLimitMiddleware(30, 60000), async (req, res) => {
+app.post('/api/cashback', rateLimitMiddleware(60, 60000), async (req, res) => {
   try {
     const { buyerId, referrerId, starsSpent, purchaseType } = req.body;
     if (!buyerId || !referrerId || !starsSpent) {
@@ -431,7 +431,7 @@ app.post('/api/cashback', rateLimitMiddleware(30, 60000), async (req, res) => {
 
 // POST /api/cashback/pending
 // A user polls for any cashback earned from their referees
-app.post('/api/cashback/pending', rateLimitMiddleware(30, 60000), async (req, res) => {
+app.post('/api/cashback/pending', rateLimitMiddleware(60, 60000), async (req, res) => {
   try {
     const { initData, userId, since } = req.body;
     const user = verifyTelegramInitData(initData);
@@ -484,7 +484,7 @@ app.post('/api/cashback/pending', rateLimitMiddleware(30, 60000), async (req, re
 // ============================================
 // STARS PAYMENT
 // ============================================
-app.post('/api/create-invoice', rateLimitMiddleware(10, 60000), async (req, res) => {
+app.post('/api/create-invoice', rateLimitMiddleware(30, 60000), async (req, res) => {
   try {
     const { title, description, payload, amount, initData } = req.body;
 
