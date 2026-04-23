@@ -637,6 +637,104 @@ app.post('/webhook', async (req, res) => {
   }
 });
 
+// ============================================
+// ANALYTICS (event tracking)
+// ============================================
+// Batch event submission — frontend gönderir, 10k kullanıcı için optimize
+app.post('/api/analytics/event', rateLimitMiddleware(300, 60000), async (req, res) => {
+  try {
+    const { initData, events } = req.body || {};
+    if (!initData) return res.status(401).json({ error: 'initData required' });
+    const user = verifyTelegramInitData(initData);
+    if (!user) return res.status(401).json({ error: 'Invalid initData' });
+    if (!Array.isArray(events) || events.length === 0) return res.status(400).json({ error: 'events array required' });
+    if (events.length > 50) return res.status(400).json({ error: 'Max 50 events per batch' });
+
+    const userId = `tg_${user.id}`;
+    // Normalize + validate events
+    const rows = events.map(e => ({
+      user_id: userId,
+      event_type: String(e.type || 'unknown').slice(0, 50),
+      event_data: (typeof e.data === 'object' && e.data !== null) ? e.data : {},
+      session_id: String(e.session || '').slice(0, 64) || null,
+    }));
+
+    if (!SUPABASE_URL) return res.json({ ok: true, stored: 0 }); // silent skip if no DB
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/analytics_events`, {
+      method: 'POST',
+      headers: {
+        'apikey': SUPABASE_KEY,
+        'Authorization': `Bearer ${SUPABASE_KEY}`,
+        'Content-Type': 'application/json',
+        'Prefer': 'return=minimal',
+      },
+      body: JSON.stringify(rows),
+    });
+    if (!r.ok) {
+      const t = await r.text();
+      console.warn('analytics store failed:', r.status, t.slice(0, 120));
+      return res.status(500).json({ error: 'Could not store events' });
+    }
+    res.json({ ok: true, stored: rows.length });
+  } catch (err) {
+    console.error('analytics endpoint error:', err);
+    res.status(500).json({ error: 'Internal error' });
+  }
+});
+
+// ============================================
+// ADMIN ANALYTICS (sadece sen göreceksin — ADMIN_USER_ID ile korunur)
+// ============================================
+const ADMIN_USER_ID = process.env.ADMIN_USER_ID || '';
+
+function isAdmin(user) {
+  if (!ADMIN_USER_ID) return false;
+  return String(user.id) === String(ADMIN_USER_ID);
+}
+
+// Dashboard için özet verileri getir
+app.post('/api/analytics/dashboard', rateLimitMiddleware(30, 60000), async (req, res) => {
+  try {
+    const { initData } = req.body || {};
+    if (!initData) return res.status(401).json({ error: 'initData required' });
+    const user = verifyTelegramInitData(initData);
+    if (!user) return res.status(401).json({ error: 'Invalid initData' });
+    if (!isAdmin(user)) return res.status(403).json({ error: 'Admin only' });
+    if (!SUPABASE_URL) return res.json({ error: 'Supabase not configured' });
+
+    // Son 7 gün günlük aktif kullanıcı
+    const last7Url = `${SUPABASE_URL}/rest/v1/analytics_last_7_days?select=*`;
+    const popularUrl = `${SUPABASE_URL}/rest/v1/analytics_popular_events_24h?select=*`;
+
+    const [r1, r2, r3] = await Promise.all([
+      fetch(last7Url, { headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` } }),
+      fetch(popularUrl, { headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` } }),
+      fetch(`${SUPABASE_URL}/rest/v1/players?select=count`, { headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}`, 'Prefer': 'count=exact' } }),
+    ]);
+
+    const last7 = r1.ok ? await r1.json() : [];
+    const popular = r2.ok ? await r2.json() : [];
+    const totalUsersHeader = r3.headers.get('content-range') || '';
+    const totalUsers = totalUsersHeader.includes('/') ? parseInt(totalUsersHeader.split('/')[1], 10) : 0;
+
+    // Bugünkü stats
+    const todayActive = last7.length > 0 ? (last7[0].active_users || 0) : 0;
+    const todayEvents = last7.length > 0 ? (last7[0].total_events || 0) : 0;
+
+    res.json({
+      ok: true,
+      totalUsers: totalUsers || 0,
+      todayActiveUsers: todayActive,
+      todayEvents: todayEvents,
+      last7Days: last7,
+      popularEvents24h: popular,
+    });
+  } catch (err) {
+    console.error('analytics dashboard error:', err);
+    res.status(500).json({ error: 'Internal error' });
+  }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🐉 DRAKY backend v3 (secure) on port ${PORT}`);
