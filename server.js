@@ -650,7 +650,7 @@ app.post('/api/analytics/event', rateLimitMiddleware(300, 60000), async (req, re
     if (!Array.isArray(events) || events.length === 0) return res.status(400).json({ error: 'events array required' });
     if (events.length > 50) return res.status(400).json({ error: 'Max 50 events per batch' });
 
-    const userId = `tg_${user.id}`;
+    const userId = user.userId;  // zaten "tg_12345" formatında
     // Normalize + validate events
     const rows = events.map(e => ({
       user_id: userId,
@@ -689,7 +689,9 @@ const ADMIN_USER_ID = process.env.ADMIN_USER_ID || '';
 
 function isAdmin(user) {
   if (!ADMIN_USER_ID) return false;
-  return String(user.id) === String(ADMIN_USER_ID);
+  // user.userId is "tg_12345", we need to extract the Telegram ID
+  const tgId = user.userId ? user.userId.replace(/^tg_/, '') : '';
+  return String(tgId) === String(ADMIN_USER_ID);
 }
 
 // Dashboard için özet verileri getir
