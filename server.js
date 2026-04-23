@@ -299,23 +299,34 @@ app.post('/api/save', rateLimitMiddleware(30, 60000), async (req, res) => {
       }),
     });
 
-    // Update leaderboard
-    if (leaderboardInfo && typeof leaderboardInfo === 'object') {
-      try {
-        await sb('leaderboard', {
-          method: 'POST',
-          headers: { 'Prefer': 'resolution=merge-duplicates' },
-          body: JSON.stringify({
-            user_id: user.userId,
-            display_name: user.firstName,
-            trophies: Math.max(0, Math.min(MAX_LIMITS.trophies, leaderboardInfo.trophies || 0)),
-            total_power: Math.max(0, Math.min(1e9, leaderboardInfo.totalPower || 0)),
-            dragons_count: Math.max(0, Math.min(MAX_LIMITS.dragons, leaderboardInfo.dragonsCount || 0)),
-            is_premium: !!leaderboardInfo.isPremium,
-          }),
-        });
-      } catch (e) { console.warn('Leaderboard fail:', e.message); }
+    // Auto-compute leaderboard info from state if not provided by client
+    // This ensures leaderboard is ALWAYS updated, even if old clients don't send it
+    let lbInfo = leaderboardInfo;
+    if (!lbInfo || typeof lbInfo !== 'object') {
+      const dragons = Array.isArray(state.dragons) ? state.dragons : [];
+      lbInfo = {
+        trophies: Number(state.trophies) || 0,
+        totalPower: dragons.reduce((s, d) => s + (Number(d && d.power) || 0), 0),
+        dragonsCount: dragons.length,
+        isPremium: !!state.isPremium,
+      };
     }
+
+    // Always update leaderboard
+    try {
+      await sb('leaderboard', {
+        method: 'POST',
+        headers: { 'Prefer': 'resolution=merge-duplicates' },
+        body: JSON.stringify({
+          user_id: user.userId,
+          display_name: user.firstName,
+          trophies: Math.max(0, Math.min(MAX_LIMITS.trophies, lbInfo.trophies || 0)),
+          total_power: Math.max(0, Math.min(1e9, lbInfo.totalPower || 0)),
+          dragons_count: Math.max(0, Math.min(MAX_LIMITS.dragons, lbInfo.dragonsCount || 0)),
+          is_premium: !!lbInfo.isPremium,
+        }),
+      });
+    } catch (e) { console.warn('Leaderboard update fail:', e.message); }
 
     return res.json({ ok: true });
   } catch (err) {
