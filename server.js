@@ -361,6 +361,127 @@ app.post('/api/referrals', rateLimitMiddleware(20, 60000), async (req, res) => {
 });
 
 // ============================================
+// CASHBACK SYSTEM (%15 Stars referral earnings)
+// ============================================
+// Telegram takes a 30% platform fee from Stars
+// Cashback is calculated on NET amount (after Telegram fee)
+const TELEGRAM_FEE_PERCENT = 0.30;
+const CASHBACK_PERCENT_NORMAL = 0.15;
+const CASHBACK_PERCENT_PREMIUM = 0.20;
+
+function calcNetCashback(starsAmount, isReferrerPremium) {
+  const netAfterFee = starsAmount * (1 - TELEGRAM_FEE_PERCENT);
+  const pct = isReferrerPremium ? CASHBACK_PERCENT_PREMIUM : CASHBACK_PERCENT_NORMAL;
+  return Math.floor(netAfterFee * pct);
+}
+
+// POST /api/cashback
+// A user reports their purchase so their referrer gets credited
+app.post('/api/cashback', rateLimitMiddleware(30, 60000), async (req, res) => {
+  try {
+    const { buyerId, referrerId, starsSpent, purchaseType } = req.body;
+    if (!buyerId || !referrerId || !starsSpent) {
+      return res.status(400).json({ error: 'Missing fields' });
+    }
+    if (typeof starsSpent !== 'number' || starsSpent < 1 || starsSpent > 100000) {
+      return res.status(400).json({ error: 'Invalid starsSpent (1-100000)' });
+    }
+    if (buyerId === referrerId) {
+      return res.status(400).json({ error: 'Cannot refer yourself' });
+    }
+
+    // Look up the referrer's premium status
+    let isReferrerPremium = false;
+    try {
+      const refRows = await sb(`players?user_id=eq.${encodeURIComponent(referrerId)}&select=state&limit=1`);
+      if (refRows && refRows[0] && refRows[0].state) {
+        const refState = typeof refRows[0].state === 'string' ? JSON.parse(refRows[0].state) : refRows[0].state;
+        isReferrerPremium = !!refState.isPremium;
+      }
+    } catch (e) {
+      // Default to false if lookup fails
+    }
+
+    const cashback = calcNetCashback(starsSpent, isReferrerPremium);
+    if (cashback <= 0) {
+      return res.json({ ok: true, cashback: 0, note: 'Amount too small for cashback' });
+    }
+
+    // Insert into cashback_pending table for the referrer to claim
+    await sb('cashback_pending', {
+      method: 'POST',
+      body: {
+        referrer_id: String(referrerId),
+        buyer_id: String(buyerId),
+        stars_spent: Math.floor(starsSpent),
+        cashback_amount: cashback,
+        purchase_type: String(purchaseType || 'unknown').slice(0, 50),
+        is_referrer_premium: isReferrerPremium,
+        created_at: new Date().toISOString(),
+        claimed: false,
+      },
+    });
+
+    return res.json({ ok: true, cashback, isReferrerPremium });
+  } catch (err) {
+    console.error('cashback report error:', err.message);
+    return res.status(500).json({ error: 'Cashback report failed' });
+  }
+});
+
+// POST /api/cashback/pending
+// A user polls for any cashback earned from their referees
+app.post('/api/cashback/pending', rateLimitMiddleware(30, 60000), async (req, res) => {
+  try {
+    const { initData, userId, since } = req.body;
+    const user = verifyTelegramInitData(initData);
+    if (!user) return res.status(401).json({ error: 'Invalid initData' });
+    const myId = user.userId;
+
+    // Fetch all unclaimed cashback entries for this user
+    let query = `cashback_pending?referrer_id=eq.${encodeURIComponent(myId)}&claimed=eq.false&select=*&order=created_at.desc&limit=50`;
+    const rows = await sb(query);
+
+    if (!rows || rows.length === 0) {
+      return res.json({ pending: [] });
+    }
+
+    // Enrich with buyer name (for UX)
+    const pending = await Promise.all(rows.map(async (row) => {
+      let buyerName = 'Arkadaşın';
+      try {
+        const buyerRows = await sb(`players?user_id=eq.${encodeURIComponent(row.buyer_id)}&select=name&limit=1`);
+        if (buyerRows && buyerRows[0] && buyerRows[0].name) {
+          buyerName = buyerRows[0].name;
+        }
+      } catch (e) {}
+      return {
+        id: row.id,
+        buyerName,
+        starsSpent: row.stars_spent,
+        cashbackStars: row.cashback_amount,
+        purchaseType: row.purchase_type,
+        time: new Date(row.created_at).getTime(),
+      };
+    }));
+
+    // Mark all as claimed (the client will credit them)
+    const ids = rows.map(r => r.id);
+    if (ids.length > 0) {
+      await sb(`cashback_pending?id=in.(${ids.join(',')})`, {
+        method: 'PATCH',
+        body: { claimed: true, claimed_at: new Date().toISOString() },
+      });
+    }
+
+    return res.json({ pending });
+  } catch (err) {
+    console.error('cashback pending error:', err.message);
+    return res.status(500).json({ error: 'Pending fetch failed' });
+  }
+});
+
+// ============================================
 // STARS PAYMENT
 // ============================================
 app.post('/api/create-invoice', rateLimitMiddleware(10, 60000), async (req, res) => {
