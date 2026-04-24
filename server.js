@@ -1,19 +1,19 @@
 // ============================================
-// DRAKY BACKEND v3 — Secure
+// DRAKY BACKEND v3 â€” Secure
 // ============================================
 // Features:
-//   • HMAC Telegram initData verification
-//   • Rate limiting (per IP + per user)
-//   • Anti-cheat: state validation (server rejects unrealistic changes)
-//   • CORS restricted to allowed origins
-//   • Supabase sync (players, leaderboard, referrals, payments)
-//   • Telegram Stars payment handling
+//   â€¢ HMAC Telegram initData verification
+//   â€¢ Rate limiting (per IP + per user)
+//   â€¢ Anti-cheat: state validation (server rejects unrealistic changes)
+//   â€¢ CORS restricted to allowed origins
+//   â€¢ Supabase sync (players, leaderboard, referrals, payments)
+//   â€¢ Telegram Stars payment handling
 //
 // Environment variables required:
-//   BOT_TOKEN             — from @BotFather
-//   SUPABASE_URL          — https://xxxxx.supabase.co
-//   SUPABASE_SERVICE_KEY  — service_role key (backend only!)
-//   ALLOWED_ORIGINS       — comma-separated list, e.g. "https://your.netlify.app"
+//   BOT_TOKEN             â€” from @BotFather
+//   SUPABASE_URL          â€” https://xxxxx.supabase.co
+//   SUPABASE_SERVICE_KEY  â€” service_role key (backend only!)
+//   ALLOWED_ORIGINS       â€” comma-separated list, e.g. "https://your.netlify.app"
 //                           (leave empty for dev/any-origin)
 
 const express = require('express');
@@ -27,27 +27,27 @@ const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean);
 
 if (!BOT_TOKEN) {
-  console.error('❌ BOT_TOKEN is required');
+  console.error('âŒ BOT_TOKEN is required');
   process.exit(1);
 }
 if (!SUPABASE_URL || !SUPABASE_KEY) {
-  console.warn('⚠️ SUPABASE not configured — sync endpoints will fail');
+  console.warn('âš ï¸ SUPABASE not configured â€” sync endpoints will fail');
 }
 
 const TELEGRAM_API = `https://api.telegram.org/bot${BOT_TOKEN}`;
 
 // ============================================
-// CORS — restricted to allowed origins
+// CORS â€” restricted to allowed origins
 // ============================================
 app.use((req, res, next) => {
   const origin = req.headers.origin || '';
   if (ALLOWED_ORIGINS.length === 0) {
-    // No restriction (dev mode — warn in logs)
+    // No restriction (dev mode â€” warn in logs)
     res.setHeader('Access-Control-Allow-Origin', origin || '*');
   } else if (ALLOWED_ORIGINS.includes(origin)) {
     res.setHeader('Access-Control-Allow-Origin', origin);
   } else {
-    // Origin not allowed — for webhook from Telegram or health checks, still respond
+    // Origin not allowed â€” for webhook from Telegram or health checks, still respond
     // but don't expose CORS headers to frontend from unknown origins
   }
   res.setHeader('Access-Control-Allow-Methods', 'POST, GET, OPTIONS');
@@ -60,7 +60,7 @@ app.use((req, res, next) => {
 // ============================================
 // Rate limiting (in-memory, per IP + per user)
 // ============================================
-const rateLimits = new Map();  // key → { count, resetAt }
+const rateLimits = new Map();  // key â†’ { count, resetAt }
 const RATE_LIMIT_CLEANUP_INTERVAL = 60000;  // 1 min
 // Periodically clean expired entries (memory leak protection)
 setInterval(() => {
@@ -87,7 +87,7 @@ function rateLimitMiddleware(maxReqs, windowMs) {
     const ip = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.ip || 'unknown';
     const key = `ip:${ip}:${req.path}`;
     if (!checkRateLimit(key, maxReqs, windowMs)) {
-      return res.status(429).json({ error: 'Too many requests — slow down' });
+      return res.status(429).json({ error: 'Too many requests â€” slow down' });
     }
     next();
   };
@@ -97,7 +97,7 @@ function rateLimitMiddleware(maxReqs, windowMs) {
 // Health check
 // ============================================
 app.get('/', (req, res) => res.json({
-  status: 'DRAKY backend running 🐉',
+  status: 'DRAKY backend running ğŸ‰',
   supabase: !!(SUPABASE_URL && SUPABASE_KEY),
   cors_restricted: ALLOWED_ORIGINS.length > 0,
 }));
@@ -249,6 +249,23 @@ app.post('/api/load', rateLimitMiddleware(120, 60000), async (req, res) => {
           state: {},
         }),
       });
+      // ALSO add new player to leaderboard so they appear in dashboards immediately
+      try {
+        await sb('leaderboard', {
+          method: 'POST',
+          headers: { 'Prefer': 'resolution=merge-duplicates' },
+          body: JSON.stringify({
+            user_id: user.userId,
+            display_name: user.firstName,
+            trophies: 0,
+            total_power: 0,
+            dragons_count: 0,
+            is_premium: false,
+          }),
+        });
+      } catch (e) {
+        console.warn('leaderboard insert (new user):', e.message);
+      }
       return res.json({ state: null, isNew: true });
     }
     return res.json({ state: rows[0].state, displayName: rows[0].display_name, isNew: false });
@@ -283,7 +300,7 @@ app.post('/api/save', rateLimitMiddleware(120, 60000), async (req, res) => {
     // Anti-cheat validation
     const check = validateState(state, oldState);
     if (!check.ok) {
-      console.warn(`⚠️ Anti-cheat rejected save for ${user.userId}: ${check.error}`);
+      console.warn(`âš ï¸ Anti-cheat rejected save for ${user.userId}: ${check.error}`);
       return res.status(400).json({ error: 'State validation failed: ' + check.error });
     }
 
@@ -338,9 +355,11 @@ app.post('/api/save', rateLimitMiddleware(120, 60000), async (req, res) => {
 // Global leaderboard (public, cached friendly)
 app.get('/api/leaderboard', rateLimitMiddleware(200, 60000), async (req, res) => {
   try {
-    const rows = await sb('leaderboard?select=user_id,display_name,trophies,total_power,dragons_count,is_premium&order=trophies.desc&limit=100');
+    // Sort by trophies desc primarily, then by total_power desc for tie-breaking
+    // This way new players (0 trophies) show up after those with wins, but sorted by power within that
+    const rows = await sb('leaderboard?select=user_id,display_name,trophies,total_power,dragons_count,is_premium,updated_at&order=trophies.desc,total_power.desc&limit=200');
     res.setHeader('Cache-Control', 'public, max-age=30');
-    return res.json({ players: rows });
+    return res.json({ players: rows, count: rows.length });
   } catch (err) {
     return res.status(500).json({ error: 'Leaderboard fetch failed' });
   }
@@ -448,7 +467,7 @@ app.post('/api/cashback/pending', rateLimitMiddleware(60, 60000), async (req, re
 
     // Enrich with buyer name (for UX)
     const pending = await Promise.all(rows.map(async (row) => {
-      let buyerName = 'Arkadaşın';
+      let buyerName = 'ArkadaÅŸÄ±n';
       try {
         const buyerRows = await sb(`players?user_id=eq.${encodeURIComponent(row.buyer_id)}&select=name&limit=1`);
         if (buyerRows && buyerRows[0] && buyerRows[0].name) {
@@ -488,7 +507,7 @@ app.post('/api/create-invoice', rateLimitMiddleware(30, 60000), async (req, res)
   try {
     const { title, description, payload, amount, initData } = req.body;
 
-    // Verify user (extra safety — stars invoices should only go to real users)
+    // Verify user (extra safety â€” stars invoices should only go to real users)
     const user = verifyTelegramInitData(initData);
     if (!user) return res.status(401).json({ error: 'Invalid initData' });
 
@@ -547,7 +566,7 @@ app.post('/webhook', async (req, res) => {
       const msg = update.message;
       const pay = msg.successful_payment;
       const userId = 'tg_' + msg.from.id;
-      console.log(`✅ Payment: ${userId} ${pay.total_amount}⭐ ${pay.invoice_payload}`);
+      console.log(`âœ… Payment: ${userId} ${pay.total_amount}â­ ${pay.invoice_payload}`);
       if (SUPABASE_URL && SUPABASE_KEY) {
         try {
           await sb('payments', {
@@ -567,13 +586,13 @@ app.post('/webhook', async (req, res) => {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             chat_id: msg.from.id,
-            text: `🎉 Ödeme alındı! ${pay.total_amount} ⭐`,
+            text: `ğŸ‰ Ã–deme alÄ±ndÄ±! ${pay.total_amount} â­`,
           }),
         });
       } catch (e) {}
     }
 
-    // /start command — referral handling
+    // /start command â€” referral handling
     if (update.message && update.message.text && update.message.text.startsWith('/start')) {
       const msg = update.message;
       const userId = 'tg_' + msg.from.id;
@@ -611,7 +630,7 @@ app.post('/webhook', async (req, res) => {
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({
                     chat_id: referrerTelegramId,
-                    text: `🎉 ${userName} davetinle katıldı! +${reward} 💎 DRAKY kazandın!`,
+                    text: `ğŸ‰ ${userName} davetinle katÄ±ldÄ±! +${reward} ğŸ’ DRAKY kazandÄ±n!`,
                   }),
                 });
               } catch (e) {}
@@ -627,7 +646,7 @@ app.post('/webhook', async (req, res) => {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             chat_id: msg.from.id,
-            text: `🐉 DRAKY'ye hoş geldin ${userName}! 🎮 OYNA butonuna bas!`,
+            text: `ğŸ‰ DRAKY'ye hoÅŸ geldin ${userName}! ğŸ® OYNA butonuna bas!`,
           }),
         });
       } catch (e) {}
@@ -640,7 +659,7 @@ app.post('/webhook', async (req, res) => {
 // ============================================
 // ANALYTICS (event tracking)
 // ============================================
-// Batch event submission — frontend gönderir, 10k kullanıcı için optimize
+// Batch event submission â€” frontend gÃ¶nderir, 10k kullanÄ±cÄ± iÃ§in optimize
 app.post('/api/analytics/event', rateLimitMiddleware(300, 60000), async (req, res) => {
   try {
     const { initData, events } = req.body || {};
@@ -650,7 +669,7 @@ app.post('/api/analytics/event', rateLimitMiddleware(300, 60000), async (req, re
     if (!Array.isArray(events) || events.length === 0) return res.status(400).json({ error: 'events array required' });
     if (events.length > 50) return res.status(400).json({ error: 'Max 50 events per batch' });
 
-    const userId = user.userId;  // zaten "tg_12345" formatında
+    const userId = user.userId;  // zaten "tg_12345" formatÄ±nda
     // Normalize + validate events
     const rows = events.map(e => ({
       user_id: userId,
@@ -683,7 +702,7 @@ app.post('/api/analytics/event', rateLimitMiddleware(300, 60000), async (req, re
 });
 
 // ============================================
-// ADMIN ANALYTICS (sadece sen göreceksin — ADMIN_USER_ID ile korunur)
+// ADMIN ANALYTICS (sadece sen gÃ¶receksin â€” ADMIN_USER_ID ile korunur)
 // ============================================
 const ADMIN_USER_ID = process.env.ADMIN_USER_ID || '';
 
@@ -694,7 +713,7 @@ function isAdmin(user) {
   return String(tgId) === String(ADMIN_USER_ID);
 }
 
-// Dashboard için özet verileri getir
+// Dashboard iÃ§in Ã¶zet verileri getir
 app.post('/api/analytics/dashboard', rateLimitMiddleware(30, 60000), async (req, res) => {
   try {
     const { initData } = req.body || {};
@@ -704,7 +723,7 @@ app.post('/api/analytics/dashboard', rateLimitMiddleware(30, 60000), async (req,
     if (!isAdmin(user)) return res.status(403).json({ error: 'Admin only' });
     if (!SUPABASE_URL) return res.json({ error: 'Supabase not configured' });
 
-    // Son 7 gün günlük aktif kullanıcı
+    // Son 7 gÃ¼n gÃ¼nlÃ¼k aktif kullanÄ±cÄ±
     const last7Url = `${SUPABASE_URL}/rest/v1/analytics_last_7_days?select=*`;
     const popularUrl = `${SUPABASE_URL}/rest/v1/analytics_popular_events_24h?select=*`;
 
@@ -719,7 +738,7 @@ app.post('/api/analytics/dashboard', rateLimitMiddleware(30, 60000), async (req,
     const totalUsersHeader = r3.headers.get('content-range') || '';
     const totalUsers = totalUsersHeader.includes('/') ? parseInt(totalUsersHeader.split('/')[1], 10) : 0;
 
-    // Bugünkü stats
+    // BugÃ¼nkÃ¼ stats
     const todayActive = last7.length > 0 ? (last7[0].active_users || 0) : 0;
     const todayEvents = last7.length > 0 ? (last7[0].total_events || 0) : 0;
 
@@ -739,8 +758,8 @@ app.post('/api/analytics/dashboard', rateLimitMiddleware(30, 60000), async (req,
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🐉 DRAKY backend v3 (secure) on port ${PORT}`);
-  console.log(`   BOT_TOKEN: ${BOT_TOKEN ? '✅' : '❌'}`);
-  console.log(`   SUPABASE: ${SUPABASE_URL ? '✅' : '❌'}`);
-  console.log(`   CORS origins: ${ALLOWED_ORIGINS.length > 0 ? ALLOWED_ORIGINS.join(', ') : '(open — dev mode)'}`);
+  console.log(`ğŸ‰ DRAKY backend v3 (secure) on port ${PORT}`);
+  console.log(`   BOT_TOKEN: ${BOT_TOKEN ? 'âœ…' : 'âŒ'}`);
+  console.log(`   SUPABASE: ${SUPABASE_URL ? 'âœ…' : 'âŒ'}`);
+  console.log(`   CORS origins: ${ALLOWED_ORIGINS.length > 0 ? ALLOWED_ORIGINS.join(', ') : '(open â€” dev mode)'}`);
 });
